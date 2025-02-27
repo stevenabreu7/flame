@@ -16,6 +16,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 import fla  # noqa
 from fla.modules.fused_linear_cross_entropy import FusedLinearCrossEntropyLoss
+from fla.pruning import update_pruning
 from flame.components.checkpoint import CheckpointManager, TrainState
 from flame.components.optimizer import build_lr_schedulers, build_optimizers
 from flame.config_manager import JobConfig
@@ -640,6 +641,47 @@ def main(job_config: JobConfig):
                 optimizers.step()
             lr_schedulers.step()
 
+            # Update pruning masks if model supports it
+            pruning_active = hasattr(model_config, 'use_pruning') and model_config.use_pruning
+            if pruning_active:
+                if parallel_dims.pp_enabled:
+                    # For pipeline parallel, update each model part
+                    current_target_sparsity = []
+                    current_sparsity, nparams, nzparams = [], [], []
+                    for model_part in model_parts:
+                        if hasattr(model_part, 'model'):
+                            update_pruning(model_part.model, train_state.step)
+                            current_target_sparsity_i = model_part.model.pruner.current_sparsity
+                            current_sparsity_i, nparams_i, nzparams_i, _ = model_part.model.pruner.get_pruning_stats()
+                            current_sparsity.append(current_sparsity_i)
+                            nparams.append(nparams_i)
+                            nzparams.append(nzparams_i)
+                            current_target_sparsity.append(current_target_sparsity_i)
+                        else:
+                            update_pruning(model_part, train_state.step)
+                            current_target_sparsity_i = model_part.pruner.current_sparsity
+                            current_sparsity_i, nparams_i, nzparams_i, _ = model_part.pruner.get_pruning_stats()
+                            current_sparsity.append(current_sparsity_i)
+                            nparams.append(nparams_i)
+                            nzparams.append(nzparams_i)
+                            current_target_sparsity.append(current_target_sparsity_i)
+                    if len(set(current_target_sparsity)) != 1:
+                        logger.warning(f"Current target sparsity is not the same for all model parts: {current_target_sparsity}")
+                    current_target_sparsity = sum(current_target_sparsity) / len(current_target_sparsity)
+                    nparams = sum(nparams)
+                    nzparams = sum(nzparams)
+                    current_sparsity = sum(current_sparsity) / len(current_sparsity)
+                else:
+                    # For non-pipeline parallel, update the base model
+                    if hasattr(model, 'model'):
+                        update_pruning(model.model, train_state.step)
+                        current_target_sparsity = model.model.pruner.current_sparsity
+                        current_sparsity, nparams, nzparams, _ = model.model.pruner.get_pruning_stats()
+                    else:
+                        update_pruning(model, train_state.step)
+                        current_target_sparsity = model.pruner.current_sparsity
+                        current_sparsity, nparams, nzparams, _ = model.pruner.get_pruning_stats()
+
             # log metrics
             if (
                 train_state.step == 1
@@ -707,6 +749,12 @@ def main(job_config: JobConfig):
 
                 device_mem_stats = device_memory_monitor.get_peak_stats()
 
+                sparsity_metrics = {
+                    "sparsity/sparsity": current_sparsity,
+                    "sparsity/sparsity_target": current_target_sparsity,
+                    "sparsity/n_params": nparams,
+                    "sparsity/n_pruned_params": nzparams,
+                } if pruning_active else {}
                 metrics = {
                     "optim/global_avg_loss": global_avg_loss,
                     "optim/global_max_loss": global_max_loss,
@@ -724,13 +772,19 @@ def main(job_config: JobConfig):
                     "memory/max_reserved(%)": device_mem_stats.max_reserved_pct,
                     "memory/num_alloc_retries": device_mem_stats.num_alloc_retries,
                     "memory/num_ooms": device_mem_stats.num_ooms,
+                    **sparsity_metrics,
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
+                sparsity_str = (
+                    f"{color.yellow}sparsity: {current_sparsity:5.2%} "
+                    f"{color.yellow}sparsity_target: {current_target_sparsity:5.2%} "
+                ) if pruning_active else ""
                 logger.info(
                     f"{color.cyan}step: {train_state.step:>8,} token: {train_state.token:>15,}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
                     f"{color.blue}lr: {last_lr:.4e} gnorm: {grad_norm:5.2f} "
+                    f"{sparsity_str}"
                     f"{color.yellow}memory: {device_mem_stats.max_reserved_gib:5.2f}GiB "
                     f"{color.red}tgs: {round(tgs):7,} mfu: {mfu:6.2%} "
                     f"{color.magenta}[{str(train_state.elapsed).split('.')[0]:>8}<{str(eta).split('.')[0]:>8}]{color.reset}"
