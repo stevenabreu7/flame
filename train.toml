@@ -1,5 +1,5 @@
 [model]
-config = "configs/transformer_340M.json"
+config = "configs/hgrn_340M.json"
 tokenizer_path = "fla-hub/transformer-1.3B-100B"
 
 [job]
