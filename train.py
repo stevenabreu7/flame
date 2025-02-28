@@ -16,7 +16,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 import fla  # noqa
 from fla.modules.fused_linear_cross_entropy import FusedLinearCrossEntropyLoss
-from fla.pruning import update_pruning
+from fla.pruning import update_sparsity, calculate_sparsity
 from flame.components.checkpoint import CheckpointManager, TrainState
 from flame.components.optimizer import build_lr_schedulers, build_optimizers
 from flame.config_manager import JobConfig
@@ -642,45 +642,14 @@ def main(job_config: JobConfig):
             lr_schedulers.step()
 
             # Update pruning masks if model supports it
+            print("updating pruning masks in train.py, step: ", train_state.step)
+            print(f"{parallel_dims.pp_enabled=}")
+            print(model.model.layers[0].mlp.gate_proj.mask)
             pruning_active = hasattr(model_config, 'use_pruning') and model_config.use_pruning
             if pruning_active:
-                if parallel_dims.pp_enabled:
-                    # For pipeline parallel, update each model part
-                    current_target_sparsity = []
-                    current_sparsity, nparams, nzparams = [], [], []
-                    for model_part in model_parts:
-                        if hasattr(model_part, 'model'):
-                            update_pruning(model_part.model, train_state.step)
-                            current_target_sparsity_i = model_part.model.pruner.current_sparsity
-                            current_sparsity_i, nparams_i, nzparams_i, _ = model_part.model.pruner.get_pruning_stats()
-                            current_sparsity.append(current_sparsity_i)
-                            nparams.append(nparams_i)
-                            nzparams.append(nzparams_i)
-                            current_target_sparsity.append(current_target_sparsity_i)
-                        else:
-                            update_pruning(model_part, train_state.step)
-                            current_target_sparsity_i = model_part.pruner.current_sparsity
-                            current_sparsity_i, nparams_i, nzparams_i, _ = model_part.pruner.get_pruning_stats()
-                            current_sparsity.append(current_sparsity_i)
-                            nparams.append(nparams_i)
-                            nzparams.append(nzparams_i)
-                            current_target_sparsity.append(current_target_sparsity_i)
-                    if len(set(current_target_sparsity)) != 1:
-                        logger.warning(f"Current target sparsity is not the same for all model parts: {current_target_sparsity}")
-                    current_target_sparsity = sum(current_target_sparsity) / len(current_target_sparsity)
-                    nparams = sum(nparams)
-                    nzparams = sum(nzparams)
-                    current_sparsity = sum(current_sparsity) / len(current_sparsity)
-                else:
-                    # For non-pipeline parallel, update the base model
-                    if hasattr(model, 'model'):
-                        update_pruning(model.model, train_state.step)
-                        current_target_sparsity = model.model.pruner.current_sparsity
-                        current_sparsity, nparams, nzparams, _ = model.model.pruner.get_pruning_stats()
-                    else:
-                        update_pruning(model, train_state.step)
-                        current_target_sparsity = model.pruner.current_sparsity
-                        current_sparsity, nparams, nzparams, _ = model.pruner.get_pruning_stats()
+                sparsity_tpl = calculate_sparsity(model, model_parts, parallel_dims.pp_enabled)
+                current_sparsity, current_target_sparsity, nparams, nzparams = sparsity_tpl
+                update_sparsity(model, model_parts, parallel_dims.pp_enabled, train_state.step)
 
             # log metrics
             if (
