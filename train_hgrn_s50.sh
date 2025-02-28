@@ -17,11 +17,25 @@
 
 batchsize=32
 
+# Add debugging output
+echo "Starting job at $(date)"
+echo "Running on host: $(hostname)"
+echo "Current working directory: $(pwd)"
+
+# Fix pyenv rehash issue before sourcing
+if [ -f "/home/sabreu/.pyenv/shims/.pyenv-shim" ]; then
+    echo "Removing stale pyenv shim file"
+    rm -f /home/sabreu/.pyenv/shims/.pyenv-shim
+fi
+
+# Activate virtual environment
 source venv/bin/activate
+echo "Python version: $(python --version)"
+echo "Virtual environment: $VIRTUAL_ENV"
 
 NNODE=1 NGPU=4 LOG_RANK=0 bash train.sh \
   --job.config_file train.toml \
-  --job.dump_folder exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse50test.steps20480.lr3e-4 \
+  --job.dump_folder /export/work/sabreu/flame/exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse50.steps20480.lr3e-4 \
   --model.config configs/hgrn_s50_340M.json \
   --model.tokenizer_path fla-hub/transformer-1.3B-100B \
   --optimizer.name AdamW \
