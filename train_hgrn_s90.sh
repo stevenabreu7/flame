@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hgrn_s50_train
+#SBATCH --job-name=hgrn_s90_train
 #SBATCH --output=%x_%j.out
 #SBATCH --partition=g80
 #SBATCH --gres=gpu:4
@@ -35,8 +35,8 @@ echo "Virtual environment: $VIRTUAL_ENV"
 
 NNODE=1 NGPU=4 LOG_RANK=0 bash train.sh \
   --job.config_file train.toml \
-  --job.dump_folder /export/work/sabreu/flame/exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse50.steps20480.lr3e-4.restart \
-  --model.config configs/hgrn_s50_340M.json \
+  --job.dump_folder /export/work/sabreu/flame/exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse90.steps20480.lr3e-4 \
+  --model.config configs/hgrn_s90_340M.json \
   --model.tokenizer_path fla-hub/transformer-1.3B-100B \
   --optimizer.name AdamW \
   --optimizer.lr 3e-4 \

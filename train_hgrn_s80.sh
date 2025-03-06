@@ -35,7 +35,7 @@ echo "Virtual environment: $VIRTUAL_ENV"
 
 NNODE=1 NGPU=4 LOG_RANK=0 bash train.sh \
   --job.config_file train.toml \
-  --job.dump_folder /export/work/sabreu/flame/exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse80test.steps20480.lr3e-4 \
+  --job.dump_folder /export/work/sabreu/flame/exp/hgrn-sparse-340M-10B/batch${batchsize}.gpu4.sparse80.steps20480.lr3e-4 \
   --model.config configs/hgrn_s80_340M.json \
   --model.tokenizer_path fla-hub/transformer-1.3B-100B \
   --optimizer.name AdamW \
