@@ -21,7 +21,8 @@ def save_pretrained(
     checkpoint: str,
     path: str,
     config: str,
-    tokenizer: str
+    tokenizer: str,
+    hf_name: str,
 ):
     logger.info(f"Loading the config from {config}")
     config = AutoConfig.from_pretrained(config, trust_remote_code=True)
@@ -50,7 +51,9 @@ def save_pretrained(
 
         logger.info(f"Saving the model to {path}")
         model.save_pretrained(path)
-
+        if hf_name:
+            logger.info(f"Pushing the model to {hf_name}")
+            model.push_to_hub(hf_name)
 
 if __name__ == "__main__":
     init_logger()
@@ -59,5 +62,6 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, required=True)
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--tokenizer", type=str, required=True)
+    parser.add_argument("--hf_name", type=str, default=None)
     args = parser.parse_args()
-    save_pretrained(args.checkpoint, args.path, args.config, args.tokenizer)
+    save_pretrained(args.checkpoint, args.path, args.config, args.tokenizer, args.hf_name)
