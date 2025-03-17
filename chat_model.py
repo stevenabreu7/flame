@@ -15,8 +15,10 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 import fla  # noqa
 from torchtitan.tools.logging import init_logger, logger
+from fla.pruning import fuse_pruning_masks
 
-def setup_model_and_tokenizer(checkpoint_dir, config_path, tokenizer_path, device='cuda'):
+
+def setup_model_and_tokenizer(checkpoint_dir, config_path, tokenizer_path, device='cuda', fuse_mask=False):
     """
     Load a model and tokenizer from checkpoint.
     
@@ -25,7 +27,8 @@ def setup_model_and_tokenizer(checkpoint_dir, config_path, tokenizer_path, devic
         config_path: Path to the model config file
         tokenizer_path: Path to the tokenizer
         device: Device to load the model onto ('cuda' or 'cpu')
-        
+        fuse_mask: Whether to fuse pruning masks
+
     Returns:
         model, tokenizer
     """
@@ -37,38 +40,42 @@ def setup_model_and_tokenizer(checkpoint_dir, config_path, tokenizer_path, devic
     
     # Find the latest checkpoint
     logger.info(f"Looking for checkpoints in {checkpoint_dir}")
-    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.startswith('step_')]
+    checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.startswith('step-') and not f.endswith("-hf")]
     if not checkpoint_files:
         raise ValueError(f"No checkpoints found in {checkpoint_dir}")
         
     # Sort by step number to get the latest checkpoint
-    latest_checkpoint = sorted(checkpoint_files, key=lambda x: int(x.split('_')[-1]))[-1]
+    latest_checkpoint = sorted(checkpoint_files, key=lambda x: int(x.split('-')[-1]))[-1]
     checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint)
     logger.info(f"Using checkpoint: {checkpoint_path}")
     
     # Create a temporary file to convert from DCP format to standard PyTorch
-    with torch.inference_mode():
-        with torch.device('cpu'):
-            # Allow timedelta and BytesIO in torch.load
-            torch.serialization.add_safe_globals([timedelta, io.BytesIO])
-            
-            # Convert DCP to regular PyTorch checkpoint
-            logger.info("Converting DCP checkpoint to PyTorch format")
-            with torch.inference_mode(), torch.device('cpu'):
-                temp_checkpoint = os.path.join(os.path.dirname(checkpoint_dir), 'temp_checkpoint.pt')
-                dcp_to_torch_save(checkpoint_path, temp_checkpoint)
-                
-                # Create model from config
-                logger.info("Initializing model from config")
-                model = AutoModelForCausalLM.from_config(config)
-                
-                # Load state dict
-                logger.info("Loading state dict from checkpoint")
-                state_dict = torch.load(temp_checkpoint, map_location='cpu')
-                model.load_state_dict(state_dict['model'])
-                
-                # Clean up the temporary file
-                os.remove(temp_checkpoint)
+    # Load model in no_grad mode instead of inference_mode to avoid version counter issues
+    with torch.no_grad():
+        # Allow timedelta and BytesIO in torch.load
+        torch.serialization.add_safe_globals([timedelta, io.BytesIO])
+        
+        # Convert DCP to regular PyTorch checkpoint
+        logger.info("Converting DCP checkpoint to PyTorch format")
+        temp_checkpoint = os.path.join(os.path.dirname(checkpoint_dir), 'temp_checkpoint.pt')
+        dcp_to_torch_save(checkpoint_path, temp_checkpoint)
+        
+        # Create model from config
+        logger.info("Initializing model from config")
+        model = AutoModelForCausalLM.from_config(config)
+        
+        # Load state dict
+        logger.info("Loading state dict from checkpoint")
+        state_dict = torch.load(temp_checkpoint, map_location='cpu')
+        model.load_state_dict(state_dict['model'])
+
+        # fuse pruning masks if requested
+        if fuse_mask:
+            logger.info("Fusing pruning masks")
+            fuse_pruning_masks(model)
+        
+        # Clean up the temporary file
+        os.remove(temp_checkpoint)
     
     # Move to the appropriate device
     if device == 'cuda' and torch.cuda.is_available():
@@ -80,7 +87,7 @@ def setup_model_and_tokenizer(checkpoint_dir, config_path, tokenizer_path, devic
     model.eval()
     return model, tokenizer
 
-def generate_text(model, tokenizer, prompt, max_length=100, temperature=0.8, top_p=0.95, do_sample=True):
+def generate_text(model, tokenizer, prompt, max_length=100, temperature=0.0, top_p=0.4, do_sample=False):
     """
     Generate text from a prompt.
     
@@ -102,7 +109,7 @@ def generate_text(model, tokenizer, prompt, max_length=100, temperature=0.8, top
     if next(model.parameters()).is_cuda:
         input_ids = input_ids.to('cuda')
     
-    with torch.inference_mode():
+    with torch.no_grad():
         outputs = model.generate(
             input_ids, 
             max_length=max_length,
@@ -115,7 +122,7 @@ def generate_text(model, tokenizer, prompt, max_length=100, temperature=0.8, top
     generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return generated_text
 
-def chat_loop(model, tokenizer):
+def chat_loop(model, tokenizer, temperature=0.0, top_p=0.4, do_sample=False):
     """
     Simple chat loop to interact with the model.
     """
@@ -138,7 +145,10 @@ def chat_loop(model, tokenizer):
             model, 
             tokenizer, 
             conversation_history, 
-            max_length=len(conversation_history) + 200
+            max_length=len(conversation_history) + 200,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=do_sample
         )
         
         # Extract just the assistant's response
@@ -161,6 +171,12 @@ def main():
                         help="Device to run inference on (cuda/cpu)")
     parser.add_argument("--prompt", type=str, default=None,
                         help="Optional prompt to generate from (if not using chat mode)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature (default: 0.0)")
+    parser.add_argument("--top_p", type=float, default=0.4,
+                        help="Top-p sampling parameter (default: 0.4)")
+    parser.add_argument("--fuse_mask", action="store_true",
+                        help="Whether to fuse pruning masks")
     
     args = parser.parse_args()
     
@@ -171,16 +187,31 @@ def main():
         args.checkpoint, 
         args.config, 
         args.tokenizer, 
-        args.device
+        args.device,
+        fuse_mask=args.fuse_mask
     )
+    
+    # Determine do_sample based on temperature
+    do_sample = args.temperature > 0.0
+    if not do_sample:
+        logger.info("Temperature is 0.0, disabling sampling (using greedy decoding)")
+        args.top_p = None
+        args.temperature = None
     
     if args.prompt:
         # Generate from a single prompt
-        generated_text = generate_text(model, tokenizer, args.prompt)
+        generated_text = generate_text(
+            model, 
+            tokenizer, 
+            args.prompt,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            do_sample=do_sample
+        )
         print(f"\nGenerated text:\n{generated_text}")
     else:
         # Enter interactive chat mode
-        chat_loop(model, tokenizer)
+        chat_loop(model, tokenizer, temperature=args.temperature, top_p=args.top_p, do_sample=do_sample)
 
 if __name__ == "__main__":
     main()
