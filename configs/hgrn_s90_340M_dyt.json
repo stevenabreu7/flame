@@ -30,8 +30,8 @@
     "prune_mlp": true,
     "prune_linear": true,
     "target_sparsity": 0.9,
-    "pruning_start_step": 2049,
-    "pruning_end_step": 10240,
-    "pruning_frequency": 256,
+    "pruning_start_step": 4097,
+    "pruning_end_step": 28610,
+    "pruning_frequency": 512,
     "model_type": "hgrn"
 } 
