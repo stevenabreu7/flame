@@ -6,6 +6,9 @@ data
 
 # bash scripts
 *.sh
+!chat*.sh
+!train_hgrn_s90_dyt.sh
+!*quantize*.sh
 
 # docs
 docs/_build
