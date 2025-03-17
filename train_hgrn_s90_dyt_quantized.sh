@@ -133,5 +133,5 @@ NNODE=1 NGPU=4 LOG_RANK=0 bash train.sh \
   --checkpoint.interval 2048 \
   --checkpoint.load_step -1 \
   --metrics.log_freq 4 \
-  --config quantization_config.toml \
+  --quantization.config quantization_config.toml \
   -- python train_with_dyt_quant.py 
