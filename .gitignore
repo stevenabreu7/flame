@@ -1,11 +1,14 @@
+venv
+*.out
+
 # test file
 test.py
 
 # data files
 data
 
-# bash scripts
-*.sh
+# # bash scripts
+# *.sh
 
 # docs
 docs/_build
