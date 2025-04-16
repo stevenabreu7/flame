@@ -24,6 +24,7 @@ dependencies = [
     'einops',
     'ninja',
     'wandb',
+    "accelerate>=1.6.0",
 ]
 
 [project.optional-dependencies]
