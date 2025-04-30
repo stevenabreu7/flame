@@ -7,14 +7,20 @@
 import torch.nn as nn
 
 from torchtitan.tools.logging import logger
+from fla.modules import PrunableLinear
 
 
-def get_num_params(model: nn.Module, exclude_embedding: bool = False) -> int:
+def get_num_params(model: nn.Module, exclude_embedding: bool = False, exclude_mask: bool = True) -> int:
     num_params = sum(p.numel() for p in model.parameters())
     if exclude_embedding:
         num_params -= sum(
-            sum(p.numel() for p in m.parameters())
+            sum(p.numel() for n, p in m.named_parameters())
             for m in model.children() if isinstance(m, nn.Embedding)
+        )
+    if exclude_mask:
+        num_params -= sum(
+            sum(p.numel() for n, p in m.named_parameters() if n == "mask")
+            for m in model.children() if isinstance(m, PrunableLinear)
         )
     return num_params
 
