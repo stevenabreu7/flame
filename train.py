@@ -627,11 +627,42 @@ def main(job_config: JobConfig):
                 pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
             )
 
+            # Update pruning masks if model supports it
+            logger.info("updating pruning masks in train.py, step: ", train_state.step)
+            logger.info(f"{parallel_dims.pp_enabled=}")
+            logger.info(model.model.layers[0].mlp.gate_proj.mask)
+            logger.info(f"Processing pruning step: {train_state.step}")
+
+            pruning_active = hasattr(model_config, 'use_pruning') and model_config.use_pruning
+            should_perform_opt_step = True
+            if pruning_active:
+                # For RIGL: Accumulate gradients before optimizer step
+                # (this is a no-op for non-RIGL pruners)
+                pruning_method = getattr(model_config, 'pruning_method', 'magnitude')
+
+                # Check if we're using RigL
+                if pruning_method == 'rigl':
+                    if hasattr(model, 'model') and hasattr(model.model, 'pruner') and hasattr(model.model.pruner, 'accumulate_gradients'):
+                        model.model.pruner.accumulate_gradients()
+
+                # Get sparsity statistics
+                sparsity_tpl = calculate_sparsity(model, model_parts, parallel_dims.pp_enabled)
+                current_sparsity, current_target_sparsity, nparams, nzparams = sparsity_tpl
+
+                # Update sparsity based on current step
+                # For RigL, this may return False to skip optimizer step
+                should_perform_opt_step = update_sparsity(model, model_parts, parallel_dims.pp_enabled, train_state.step, optimizers)
+                logger.info(f"{should_perform_opt_step=}")
+
+                if not should_perform_opt_step and pruning_method == 'rigl':
+                    logger.info(f"RIGL topology update at step {train_state.step} - skipping optimizer step")
+
             # optimizer step
             checkpoint.maybe_wait_for_staging()
-            if job_config.training.skip_nan_inf and (
-                grad_norm.isnan() or grad_norm.isinf()
-            ):
+            if not should_perform_opt_step:
+                # RIGL topology update performed -> skip optimizer step
+                logger.info(f"RIGL topology update at step {train_state.step} - skipping optimizer step")
+            elif job_config.training.skip_nan_inf and (grad_norm.isnan() or grad_norm.isinf()):
                 logger.warning(
                     f"Skipping optimizer step - detected invalid gradient norm: {grad_norm:.4f}"
                 )
@@ -640,16 +671,6 @@ def main(job_config: JobConfig):
             else:
                 optimizers.step()
             lr_schedulers.step()
-
-            # Update pruning masks if model supports it
-            print("updating pruning masks in train.py, step: ", train_state.step)
-            print(f"{parallel_dims.pp_enabled=}")
-            print(model.model.layers[0].mlp.gate_proj.mask)
-            pruning_active = hasattr(model_config, 'use_pruning') and model_config.use_pruning
-            if pruning_active:
-                sparsity_tpl = calculate_sparsity(model, model_parts, parallel_dims.pp_enabled)
-                current_sparsity, current_target_sparsity, nparams, nzparams = sparsity_tpl
-                update_sparsity(model, model_parts, parallel_dims.pp_enabled, train_state.step)
 
             # log metrics
             if (
